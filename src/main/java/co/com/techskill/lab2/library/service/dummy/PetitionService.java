@@ -1,13 +1,23 @@
 package co.com.techskill.lab2.library.service.dummy;
 
 import co.com.techskill.lab2.library.domain.dto.PetitionDTO;
+import co.com.techskill.lab2.library.service.exception.ReturnTooOldException;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.reactor.circuitbreaker.operator.CircuitBreakerOperator;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.util.retry.Retry;
 
+import java.time.Duration;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 
 @Service
 public class PetitionService {
@@ -49,4 +59,48 @@ public class PetitionService {
     }
 
     //TO - DO: Challenge #1
+    public Flux<String> processReturnsFlow() {
+
+        CircuitBreakerConfig cbConfig = CircuitBreakerConfig.custom()
+                .failureRateThreshold(50f)
+                .slidingWindowSize(10)
+                .waitDurationInOpenState(Duration.ofSeconds(5))
+                .permittedNumberOfCallsInHalfOpenState(2)
+                .build();
+        CircuitBreaker cb = CircuitBreakerRegistry.of(cbConfig).circuitBreaker("returns");
+
+        final int concurrency = 4;
+        final int prefetch = 8;
+        final Duration timeout = Duration.ofMillis(700);
+        final Duration pacing = Duration.ofMillis(300);
+
+        return Flux.fromIterable(petitions)
+                .filter(p -> "RETURN".equalsIgnoreCase(p.getType()))
+                .limitRate(prefetch)
+                .flatMap(p ->
+                                handleReturn(p)
+                                        .transformDeferred(CircuitBreakerOperator.of(cb))
+                                        .timeout(timeout)
+                                        .retryWhen(
+                                                Retry.backoff(2, Duration.ofMillis(200))
+                                                        .filter(ex -> ex instanceof java.util.concurrent.TimeoutException)
+                                        )
+                                        .onErrorResume(ReturnTooOldException.class,
+                                                ex -> Mono.just("[RECHAZADA] RETURN vencida (>3 días) - petition " + p.getPetitionId()))
+                                        .onErrorResume(java.util.concurrent.TimeoutException.class,
+                                                ex -> Mono.just("[TIMEOUT] Servicio lento procesando RETURN " + p.getPetitionId()))
+                        , concurrency)
+                .concatMap(msg -> Mono.just(msg).delayElement(pacing))
+                .doOnNext(System.out::println);
+    }
+
+    private Mono<String> handleReturn(PetitionDTO p) {
+        long days = ChronoUnit.DAYS.between(p.getSentAt(), LocalDateTime.now());
+        if (days > 3) {
+            return Mono.error(new ReturnTooOldException("RETURN con " + days + " días"));
+        }
+        long latency = ThreadLocalRandom.current().nextLong(200, 1200);
+        String okMsg = "[OK] RETURN " + p.getPetitionId() + " (lat=" + latency + "ms)";
+        return Mono.just(okMsg).delayElement(Duration.ofMillis(latency));
+    }
 }

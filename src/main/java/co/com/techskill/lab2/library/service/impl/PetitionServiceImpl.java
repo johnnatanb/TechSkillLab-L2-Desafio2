@@ -10,6 +10,7 @@ import co.com.techskill.lab2.library.service.IPetitionService;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.reactor.circuitbreaker.operator.CircuitBreakerOperator;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -22,6 +23,7 @@ import java.util.Objects;
 import java.util.UUID;
 
 @Service
+@Profile("mongo")
 public class PetitionServiceImpl implements IPetitionService {
 
     private final IPetitionRepository petitionRepository;
